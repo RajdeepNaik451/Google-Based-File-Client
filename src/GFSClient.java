@@ -6,38 +6,80 @@ import java.util.List;
 public class GFSClient {
 
     public static void main(String[] args) {
+
         try {
-            Socket socket = new Socket("localhost", 8080);
+            //CREATE FILE
+            Message createReq = new Message();
+            createReq.type = RequestType.CREATE_FILE;
+            createReq.fileName = "test.txt";
 
-            ObjectOutputStream out = new ObjectOutputStream(socket.getOutputStream());
-            ObjectInputStream in = new ObjectInputStream(socket.getInputStream());
+            Message createRes = talkToMaster(createReq);
+            System.out.println("File created, chunks: " + createRes.chunkList);
 
-            Message msg = new Message();
-            msg.type = RequestType.GET_CHUNKS;
-            msg.fileName = "test.txt";
-            msg.data = "Hello GFS".getBytes();
+            //GET CHUNKS
+            Message getReq = new Message();
+            getReq.type = RequestType.GET_CHUNKS;
+            getReq.fileName = "test.txt";
 
-            out.writeObject(msg);
-            out.flush();
+            Message getRes = talkToMaster(getReq);
+            List<String> chunks = getRes.chunkList;
+            System.out.println("Chunks from master: " + chunks);
 
-            Object obj = in.readObject();
+            String chunkId = chunks.get(0); // first chunk
 
-            if (!(obj instanceof Message)) {
-                throw new RuntimeException(
-                        "Protocol violation: expected Message, got " + obj.getClass()
-                );
-            }
+            //WRITE CHUNK (to ChunkServer)
+            Message writeReq = new Message();
+            writeReq.type = RequestType.WRITE_CHUNK;
+            writeReq.chunkId = chunkId;
+            writeReq.data = "Hello GFS".getBytes();
 
-            Message response = (Message) obj;
+            talkToChunkServer("localhost", 6001, writeReq);
+            System.out.println("Data written to chunk: " + chunkId);
 
-            System.out.println("Response type: " + response.type);
-            System.out.println("File: " + response.fileName);
-            System.out.println("Chunks: " + response.chunkList);
+            // READ CHUNK
+            Message readReq = new Message();
+            readReq.type = RequestType.READ_CHUNK;
+            readReq.chunkId = chunkId;
 
+            Message readRes = talkToChunkServer("localhost", 6001, readReq);
+            System.out.println("Read data: " + new String(readRes.data));
 
-            socket.close();
         } catch (Exception e) {
             e.printStackTrace();
         }
+    }
+
+    //Master communication
+    private static Message talkToMaster(Message msg) throws Exception {
+        Socket socket = new Socket("localhost", 8080);
+
+        ObjectOutputStream out = new ObjectOutputStream(socket.getOutputStream());
+        ObjectInputStream in = new ObjectInputStream(socket.getInputStream());
+
+        out.writeObject(msg);
+        out.flush();
+
+        Message response = (Message) in.readObject();
+        socket.close();
+
+        return response;
+    }
+
+    //ChunkServer communication
+    private static Message talkToChunkServer(String host, int port, Message msg)
+            throws Exception {
+
+        Socket socket = new Socket(host, port);
+
+        ObjectOutputStream out = new ObjectOutputStream(socket.getOutputStream());
+        ObjectInputStream in = new ObjectInputStream(socket.getInputStream());
+
+        out.writeObject(msg);
+        out.flush();
+
+        Message response = (Message) in.readObject();
+        socket.close();
+
+        return response;
     }
 }
