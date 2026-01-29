@@ -1,85 +1,47 @@
-import java.io.ObjectInputStream;
-import java.io.ObjectOutputStream;
-import java.net.Socket;
 import java.util.List;
 
 public class GFSClient {
 
     public static void main(String[] args) {
-
         try {
-            //CREATE FILE
+            Thread.sleep(2000); // wait for ChunkServer registration
+
+            System.out.println("Sending CREATE_FILE request");
+
             Message createReq = new Message();
             createReq.type = RequestType.CREATE_FILE;
             createReq.fileName = "test.txt";
 
-            Message createRes = talkToMaster(createReq);
-            System.out.println("File created, chunks: " + createRes.chunkList);
+            Message createRes = RPC.master(createReq);
+            System.out.println("CREATE_FILE response: " + createRes.chunkList);
 
-            //GET CHUNKS
             Message getReq = new Message();
             getReq.type = RequestType.GET_CHUNKS;
             getReq.fileName = "test.txt";
 
-            Message getRes = talkToMaster(getReq);
-            List<String> chunks = getRes.chunkList;
-            System.out.println("Chunks from master: " + chunks);
+            Message getRes = RPC.master(getReq);
+            System.out.println("GET_CHUNKS response: " + getRes.chunkList);
 
-            String chunkId = chunks.get(0); // first chunk
+            String chunkId = getRes.chunkList.get(0);
 
-            //WRITE CHUNK (to ChunkServer)
             Message writeReq = new Message();
             writeReq.type = RequestType.WRITE_CHUNK;
             writeReq.chunkId = chunkId;
             writeReq.data = "Hello GFS".getBytes();
 
-            talkToChunkServer("localhost", 6001, writeReq);
-            System.out.println("Data written to chunk: " + chunkId);
+            RPC.chunk("localhost", 6001, writeReq);
+            System.out.println("WRITE complete");
 
-            // READ CHUNK
             Message readReq = new Message();
             readReq.type = RequestType.READ_CHUNK;
             readReq.chunkId = chunkId;
 
-            Message readRes = talkToChunkServer("localhost", 6001, readReq);
-            System.out.println("Read data: " + new String(readRes.data));
+            Message readRes = RPC.chunk("localhost", 6001, readReq);
+            System.out.println("READ data: " + new String(readRes.data));
 
         } catch (Exception e) {
             e.printStackTrace();
         }
     }
 
-    //Master communication
-    private static Message talkToMaster(Message msg) throws Exception {
-        Socket socket = new Socket("localhost", 8080);
-
-        ObjectOutputStream out = new ObjectOutputStream(socket.getOutputStream());
-        ObjectInputStream in = new ObjectInputStream(socket.getInputStream());
-
-        out.writeObject(msg);
-        out.flush();
-
-        Message response = (Message) in.readObject();
-        socket.close();
-
-        return response;
-    }
-
-    //ChunkServer communication
-    private static Message talkToChunkServer(String host, int port, Message msg)
-            throws Exception {
-
-        Socket socket = new Socket(host, port);
-
-        ObjectOutputStream out = new ObjectOutputStream(socket.getOutputStream());
-        ObjectInputStream in = new ObjectInputStream(socket.getInputStream());
-
-        out.writeObject(msg);
-        out.flush();
-
-        Message response = (Message) in.readObject();
-        socket.close();
-
-        return response;
-    }
 }
