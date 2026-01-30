@@ -1,85 +1,136 @@
-import java.io.ObjectInputStream;
-import java.io.ObjectOutputStream;
-import java.net.Socket;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.util.ArrayList;
 import java.util.List;
 
 public class GFSClient {
 
+    private static final int CHUNK_SIZE = 64 * 1024; // 64 KB
+
     public static void main(String[] args) {
 
         try {
-            //CREATE FILE
-            Message createReq = new Message();
-            createReq.type = RequestType.CREATE_FILE;
-            createReq.fileName = "test.txt";
+            Thread.sleep(2000); // wait for chunkservers
 
-            Message createRes = talkToMaster(createReq);
-            System.out.println("File created, chunks: " + createRes.chunkList);
+            // ================= GFS PATH =================
+            String gfsPath = "/docs/The Compound Effect.pdf";
 
-            //GET CHUNKS
-            Message getReq = new Message();
-            getReq.type = RequestType.GET_CHUNKS;
-            getReq.fileName = "test.txt";
+            // ================= CREATE DIRECTORY =================
+            Message mkdir = new Message();
+            mkdir.type = RequestType.CREATE_DIRECTORY;
+            mkdir.fileName = "/docs";
+            RPC.masterOneWay(mkdir);
 
-            Message getRes = talkToMaster(getReq);
-            List<String> chunks = getRes.chunkList;
-            System.out.println("Chunks from master: " + chunks);
+            // ================= READ LOCAL FILE =================
+            Path localFile = Path.of(
+                    "C:/Users/rajde/Downloads/The Compound Effect.pdf"
+            );
+            byte[] fileData = Files.readAllBytes(localFile);
 
-            String chunkId = chunks.get(0); // first chunk
+            // ================= CREATE FILE =================
+            Message create = new Message();
+            create.type = RequestType.CREATE_FILE;
+            create.fileName = gfsPath;
+            create.fileSize = fileData.length;
+            create.fileType = "pdf";
 
-            //WRITE CHUNK (to ChunkServer)
-            Message writeReq = new Message();
-            writeReq.type = RequestType.WRITE_CHUNK;
-            writeReq.chunkId = chunkId;
-            writeReq.data = "Hello GFS".getBytes();
+            Message createRes = RPC.master(create);
 
-            talkToChunkServer("localhost", 6001, writeReq);
-            System.out.println("Data written to chunk: " + chunkId);
+            List<String> chunkIds;
 
-            // READ CHUNK
-            Message readReq = new Message();
-            readReq.type = RequestType.READ_CHUNK;
-            readReq.chunkId = chunkId;
+            // File already exists → fetch metadata
+            if (createRes.chunkList == null) {
+                System.out.println("File already exists. Fetching metadata...");
 
-            Message readRes = talkToChunkServer("localhost", 6001, readReq);
-            System.out.println("Read data: " + new String(readRes.data));
+                Message get = new Message();
+                get.type = RequestType.GET_CHUNKS;
+                get.fileName = gfsPath;
+
+                Message getRes = RPC.master(get);
+                chunkIds = getRes.chunkList;
+
+            } else {
+                chunkIds = createRes.chunkList;
+            }
+
+            // ================= SPLIT FILE =================
+            List<byte[]> dataChunks = splitFile(fileData);
+
+            // ================= GET REPLICA LOCATIONS ONCE =================
+            Message meta = new Message();
+            meta.type = RequestType.GET_CHUNKS;
+            meta.fileName = gfsPath;
+
+            Message info = RPC.master(meta);
+            List<String> replicas = info.chunkServerList;
+
+            // ================= WRITE EACH CHUNK =================
+            for (int i = 0; i < chunkIds.size(); i++) {
+
+                Message write = new Message();
+                write.type = RequestType.WRITE_CHUNK;
+                write.chunkId = chunkIds.get(i);
+                write.data = dataChunks.get(i);
+
+                for (String server : replicas) {
+                    String[] p = server.split(":");
+                    RPC.chunk(p[0], Integer.parseInt(p[1]), write);
+                }
+            }
+
+            System.out.println("File written successfully");
+
+            // ================= READ BACK FILE =================
+            List<byte[]> downloaded = new ArrayList<>();
+
+            for (String chunkId : chunkIds) {
+
+                Message read = new Message();
+                read.type = RequestType.READ_CHUNK;
+                read.chunkId = chunkId;
+
+                // Read from first available replica
+                String[] p = replicas.get(0).split(":");
+                Message readRes =
+                        RPC.chunk(p[0], Integer.parseInt(p[1]), read);
+
+                downloaded.add(readRes.data);
+            }
+
+            // ================= MERGE & SAVE =================
+            int total = downloaded.stream().mapToInt(b -> b.length).sum();
+            byte[] finalData = new byte[total];
+
+            int pos = 0;
+            for (byte[] part : downloaded) {
+                System.arraycopy(part, 0, finalData, pos, part.length);
+                pos += part.length;
+            }
+
+            Files.write(
+                    Path.of("downloaded_The_Compound_Effect.pdf"),
+                    finalData
+            );
+
+            System.out.println("File retrieved successfully");
 
         } catch (Exception e) {
             e.printStackTrace();
         }
     }
 
-    //Master communication
-    private static Message talkToMaster(Message msg) throws Exception {
-        Socket socket = new Socket("localhost", 8080);
+    // ================= FILE CHUNKING =================
+    private static List<byte[]> splitFile(byte[] data) {
 
-        ObjectOutputStream out = new ObjectOutputStream(socket.getOutputStream());
-        ObjectInputStream in = new ObjectInputStream(socket.getInputStream());
+        List<byte[]> chunks = new ArrayList<>();
 
-        out.writeObject(msg);
-        out.flush();
+        for (int i = 0; i < data.length; i += CHUNK_SIZE) {
+            int end = Math.min(data.length, i + CHUNK_SIZE);
+            byte[] part = new byte[end - i];
+            System.arraycopy(data, i, part, 0, part.length);
+            chunks.add(part);
+        }
 
-        Message response = (Message) in.readObject();
-        socket.close();
-
-        return response;
-    }
-
-    //ChunkServer communication
-    private static Message talkToChunkServer(String host, int port, Message msg)
-            throws Exception {
-
-        Socket socket = new Socket(host, port);
-
-        ObjectOutputStream out = new ObjectOutputStream(socket.getOutputStream());
-        ObjectInputStream in = new ObjectInputStream(socket.getInputStream());
-
-        out.writeObject(msg);
-        out.flush();
-
-        Message response = (Message) in.readObject();
-        socket.close();
-
-        return response;
+        return chunks;
     }
 }
