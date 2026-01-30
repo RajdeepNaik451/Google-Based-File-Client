@@ -43,4 +43,18 @@ public class RPC {
         socket.close();
         return response;
     }
+    // MASTER ONE-WAY
+    public static void masterOneWay(Message msg) throws Exception {
+
+        Socket socket = new Socket("localhost", 8080);
+
+        ObjectOutputStream out = new ObjectOutputStream(socket.getOutputStream());
+        out.flush();
+
+        out.writeObject(msg);
+        out.flush();
+
+        socket.close(); // no response expected
+    }
+
 }
